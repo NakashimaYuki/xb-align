@@ -14,6 +14,9 @@ def normalize_smiles(smi: str) -> Optional[str]:
     """Normalize raw SMILES into canonical isomeric SMILES. Return None if invalid."""
     if not isinstance(smi, str):
         return None
+    # Filter out 'SDF' placeholders (case-insensitive)
+    if smi.strip().upper() == 'SDF':
+        return None
     mol = Chem.MolFromSmiles(smi)
     if mol is None:
         return None
@@ -68,6 +71,7 @@ def build_np_scaffolds(
         max_ids_per_scaffold: Maximum number of source IDs to store per scaffold
     """
     print(f"Reading NP Excel from: {xlsx_path}")
+    print(f"File size: {os.path.getsize(xlsx_path) / 1024 / 1024:.2f} MB")
     df = pd.read_excel(xlsx_path)
 
     if "Smiles" not in df.columns:
@@ -75,19 +79,38 @@ def build_np_scaffolds(
     if "ID" not in df.columns:
         raise ValueError("Input Excel must contain 'ID' column.")
 
+    print(f"Loaded {len(df)} rows")
+    print("Starting SMILES normalization and scaffold extraction...")
+
     records: List[Dict[str, str]] = []
+    skipped_sdf = 0
+    skipped_invalid = 0
+    skipped_no_scaffold = 0
 
     for idx, row in df.iterrows():
         raw_smi = row["Smiles"]
         np_id = row["ID"]
         name = row.get("Name", "")
 
+        # Check for SDF placeholder
+        if isinstance(raw_smi, str) and raw_smi.strip().upper() == 'SDF':
+            skipped_sdf += 1
+            if (idx + 1) % 10000 == 0:
+                print(f"Processed {idx + 1}/{len(df)} rows, valid: {len(records)}, skipped SDF: {skipped_sdf}, invalid: {skipped_invalid}, no scaffold: {skipped_no_scaffold}")
+            continue
+
         smi = normalize_smiles(raw_smi)
         if smi is None:
+            skipped_invalid += 1
+            if (idx + 1) % 10000 == 0:
+                print(f"Processed {idx + 1}/{len(df)} rows, valid: {len(records)}, skipped SDF: {skipped_sdf}, invalid: {skipped_invalid}, no scaffold: {skipped_no_scaffold}")
             continue
 
         scaf_smi = get_scaffold_smiles(smi)
         if scaf_smi is None:
+            skipped_no_scaffold += 1
+            if (idx + 1) % 10000 == 0:
+                print(f"Processed {idx + 1}/{len(df)} rows, valid: {len(records)}, skipped SDF: {skipped_sdf}, invalid: {skipped_invalid}, no scaffold: {skipped_no_scaffold}")
             continue
 
         records.append(
@@ -99,14 +122,23 @@ def build_np_scaffolds(
             }
         )
 
-        if (idx + 1) % 1000 == 0:
-            print(f"Processed {idx + 1} rows, valid records: {len(records)}")
+        if (idx + 1) % 10000 == 0:
+            print(f"Processed {idx + 1}/{len(df)} rows, valid: {len(records)}, skipped SDF: {skipped_sdf}, invalid: {skipped_invalid}, no scaffold: {skipped_no_scaffold}")
 
     if not records:
         raise RuntimeError("No valid NP records with scaffolds. Check input data.")
 
+    print(f"\n" + "="*80)
+    print(f"Processing complete!")
+    print(f"  Total input rows: {len(df)}")
+    print(f"  Skipped SDF placeholders: {skipped_sdf} ({skipped_sdf/len(df)*100:.1f}%)")
+    print(f"  Skipped invalid SMILES: {skipped_invalid} ({skipped_invalid/len(df)*100:.1f}%)")
+    print(f"  Skipped no scaffold: {skipped_no_scaffold} ({skipped_no_scaffold/len(df)*100:.1f}%)")
+    print(f"  Valid records with scaffolds: {len(records)} ({len(records)/len(df)*100:.1f}%)")
+    print("="*80 + "\n")
+
     sdf = pd.DataFrame(records)
-    print(f"Total valid NP records with scaffolds: {len(sdf)}")
+    print(f"Deduplicating scaffolds...")
 
     # Group by scaffold and aggregate
     groups = []
@@ -138,6 +170,25 @@ def build_np_scaffolds(
 
 if __name__ == "__main__":
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    xlsx_path = os.path.join(project_root, "data", "raw", "CNPD_ETCM_merged.xlsx")
+
+    # Try to find the CNPD-ETCM file (with or without Chinese characters)
+    xlsx_candidates = [
+        "CNPD-ETCM-合并去重.xlsx",  # Original Chinese name
+        "CNPD_ETCM_merged.xlsx",      # English fallback
+    ]
+
+    xlsx_path = None
+    for candidate in xlsx_candidates:
+        test_path = os.path.join(project_root, "data", "raw", candidate)
+        if os.path.exists(test_path):
+            xlsx_path = test_path
+            break
+
+    if xlsx_path is None:
+        raise FileNotFoundError(
+            f"Could not find CNPD-ETCM data file. Tried: {xlsx_candidates}\n"
+            f"Please place your file in: {os.path.join(project_root, 'data', 'raw')}"
+        )
+
     out_parquet = os.path.join(project_root, "data", "processed", "np_scaffolds.parquet")
     build_np_scaffolds(xlsx_path, out_parquet)
