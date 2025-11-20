@@ -1,0 +1,91 @@
+xb_align_v4/
+│
+├── .git/                          # Git repository
+├── .gitignore                     # Git ignore patterns
+│
+├── README.md                      # Main documentation
+├── QUICKSTART.md                  # Quick start guide
+├── PROJECT_STATUS.md              # M1 status report
+├── TREE.txt                       # This file
+│
+├── pyproject.toml                 # Package configuration
+├── pytest.ini                     # Pytest configuration
+│
+├── setup_env.bat                  # Windows setup script
+├── setup_env.sh                   # Linux/Mac setup script
+├── run_m1_pipeline.py            # M1 pipeline runner
+│
+├── data/
+│   ├── raw/                       # Input data
+│   │   ├── CNPD_ETCM_merged.xlsx # 20 natural products (sample)
+│   │   └── drugs_raw.csv         # 30 drugs (sample)
+│   │
+│   └── processed/                 # Generated data (gitignored)
+│       ├── np_scaffolds.parquet  # NP scaffolds
+│       ├── drugs_std.parquet     # Standardized drugs
+│       ├── drug_halopos_ref.npz  # Position reference
+│       ├── envfrag_table.npz     # Env x Frag table
+│       └── graph_mlm.pt          # Trained model
+│
+├── xb_align/                      # Main package
+│   ├── __init__.py
+│   │
+│   ├── core/                      # Core utilities
+│   │   ├── __init__.py
+│   │   └── env_featurizer.py    # Environment encoding
+│   │
+│   ├── data/                      # Data processing
+│   │   ├── __init__.py
+│   │   ├── prepare_np_scaffolds.py   # Extract NP scaffolds
+│   │   ├── prepare_drugs.py          # Standardize drugs
+│   │   ├── build_halopos_stats.py    # Build position stats
+│   │   └── build_envfrag_table.py    # Build Env x Frag
+│   │
+│   ├── priors/                    # Prior models
+│   │   ├── __init__.py
+│   │   ├── atom_vocab.py         # Atom type vocabulary
+│   │   ├── position_descriptor.py # Position representation
+│   │   ├── pas_energy.py         # PAS energy (placeholder)
+│   │   ├── envfrag_energy.py     # Env x Frag energy
+│   │   ├── graph_mlm.py          # Graph-MLM model
+│   │   ├── graph_mlm_data.py     # Graph-MLM data utils
+│   │   └── train_graph_mlm.py    # Graph-MLM training
+│   │
+│   ├── rewards/                   # Reward functions
+│   │   ├── __init__.py
+│   │   └── prior_micro.py        # Combined prior scorer
+│   │
+│   ├── scripts/                   # Analysis scripts
+│   │   ├── __init__.py
+│   │   └── compare_prior_on_drugs_vs_random.py
+│   │
+│   ├── gfn/                       # GFlowNet (M2, future)
+│   │   └── __init__.py
+│   │
+│   ├── baseline/                  # Baselines (future)
+│   ├── docking/                   # Docking (M5, future)
+│   └── eval/                      # Evaluation (future)
+│
+└── tests/                         # Unit tests
+    ├── __init__.py
+    └── test_data_pipeline.py     # Data processing tests
+
+
+Key Statistics:
+  - 17 Python modules implemented
+  - 6 unit tests passing
+  - 50 sample molecules included
+  - 5 data processing scripts
+  - 1 training script
+  - 1 evaluation script
+  - Complete documentation (3 files)
+
+M1 Deliverables (All Complete):
+  ✓ np_scaffolds.parquet
+  ✓ drugs_std.parquet
+  ✓ drug_halopos_ref.npz
+  ✓ envfrag_table.npz
+  ✓ graph_mlm.pt
+  ✓ Validation script
+
+Ready for M2: GFlowNet Implementation
