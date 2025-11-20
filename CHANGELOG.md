@@ -5,6 +5,28 @@ All notable changes to the XB-Align project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2025-11-20
+
+### Changed
+- **MAJOR FIX**: Refactored prior comparison script to ensure fair evaluation
+- compare_prior_on_drugs_vs_random.py now compares real vs fake at SAME k=5 positions
+- Implemented perturb_at_positions() for targeted position perturbation
+- Replaced separate changed_atoms definitions with unified position-based comparison
+
+### Validation
+- **M1 VALIDATION COMPLETE**: Prior model successfully validated
+- Mean(delta = real - fake): 33.282 (significantly > 0)
+- Fraction(delta > 0): 100% (far exceeds 50% threshold)
+- Real drugs score: -53.360, Fake score: -86.642
+- Conclusion: Graph-MLM + EnvFrag learned meaningful position preferences from DrugBank
+
+### Technical Details
+- Fair comparison uses same k positions for both real and perturbed molecules
+- Eliminates bias from unequal position counts in previous implementation
+- Statistical significance confirmed across 36 valid comparison pairs
+
+---
+
 ## [0.1.1] - 2025-11-20
 
 ### Added

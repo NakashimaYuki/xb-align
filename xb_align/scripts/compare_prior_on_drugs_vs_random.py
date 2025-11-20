@@ -1,9 +1,15 @@
 # xb_align/scripts/compare_prior_on_drugs_vs_random.py
-"""Compare log_prior_micro scores between real drugs and randomly perturbed molecules."""
+"""Compare log_prior_micro scores between real drugs and randomly perturbed molecules.
+
+This script ensures fair comparison by:
+1. Selecting k random positions in each molecule
+2. Creating a perturbed version with different atoms at those positions
+3. Comparing prior scores at the SAME positions for both real and perturbed
+"""
 
 import os
 import random
-from typing import List
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -36,47 +42,82 @@ def load_envfrag_from_npz(path: str) -> EnvFragEnergy:
     return EnvFragEnergy(table=table, default_logp=-10.0)
 
 
-def random_perturb_mol(mol: Chem.Mol, num_changes: int = 2):
-    """Randomly change atom types at a few positions to another allowed type.
+def perturb_at_positions(mol: Chem.Mol, positions: List[int]) -> Optional[Chem.Mol]:
+    """Create a perturbed molecule by changing atoms at specified positions.
 
     Args:
-        mol: RDKit molecule object
-        num_changes: Number of atoms to randomly change
+        mol: Original molecule
+        positions: List of atom indices to modify
 
     Returns:
-        Tuple of (perturbed molecule, list of changed atom indices)
+        Perturbed molecule or None if sanitization fails
     """
     rw = Chem.RWMol(mol)
-    num_atoms = rw.GetNumAtoms()
-    if num_atoms == 0:
-        return mol, []
 
-    num_changes = min(num_changes, num_atoms)
-    indices = random.sample(range(num_atoms), num_changes)
-
-    changed_indices: List[int] = []
-    for idx in indices:
+    for idx in positions:
         atom = rw.GetAtomWithIdx(idx)
         old_sym = atom.GetSymbol()
+        # Choose a different atom type from ATOM_TYPES
         choices = [e for e in ATOM_TYPES if e != old_sym]
         if not choices:
             continue
         new_sym = random.choice(choices)
         z = Chem.GetPeriodicTable().GetAtomicNumber(new_sym)
         atom.SetAtomicNum(z)
-        changed_indices.append(idx)
 
     new_mol = rw.GetMol()
     try:
         Chem.SanitizeMol(new_mol)
+        return new_mol
     except Exception:
-        # If sanitization fails, return original
-        return mol, []
-    return new_mol, changed_indices
+        return None
+
+
+def compare_at_same_positions(
+    mol: Chem.Mol,
+    scorer: PriorMicroScorer,
+    k: int = 5,
+) -> Optional[Tuple[float, float, float]]:
+    """Compare real vs perturbed molecule at the same k positions.
+
+    Args:
+        mol: Original molecule
+        scorer: Prior scorer
+        k: Number of positions to compare
+
+    Returns:
+        Tuple of (s_real, s_fake, delta) or None if comparison failed
+    """
+    # Select k candidate positions (prefer C/N/O/S atoms for more meaningful comparison)
+    candidates = [
+        a.GetIdx()
+        for a in mol.GetAtoms()
+        if a.GetSymbol() in ("C", "N", "O", "S", "P")
+    ]
+
+    if len(candidates) < k:
+        return None
+
+    positions = random.sample(candidates, k)
+
+    # Create perturbed molecule at these positions
+    mol_fake = perturb_at_positions(mol, positions)
+    if mol_fake is None:
+        return None
+
+    # Calculate scores at the SAME positions
+    try:
+        s_real = scorer.log_prior_micro(mol, positions)
+        s_fake = scorer.log_prior_micro(mol_fake, positions)
+    except Exception:
+        return None
+
+    delta = s_real - s_fake
+    return (s_real, s_fake, delta)
 
 
 def main():
-    """Main comparison script."""
+    """Main comparison script with fair evaluation."""
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     drugs_parquet = os.path.join(project_root, "data", "processed", "drugs_std.parquet")
     envfrag_npz = os.path.join(project_root, "data", "processed", "envfrag_table.npz")
@@ -86,7 +127,7 @@ def main():
     df = pd.read_parquet(drugs_parquet)
     smiles_list = df["smiles"].tolist()
     random.shuffle(smiles_list)
-    smiles_list = smiles_list[:1000]  # Small sample
+    smiles_list = smiles_list[:1000]  # Sample for faster evaluation
 
     # Load models
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -117,46 +158,51 @@ def main():
 
     real_scores = []
     fake_scores = []
+    deltas = []
 
-    print("\nComparing real drugs vs randomly perturbed molecules...")
+    print("\nComparing real drugs vs perturbed molecules at SAME positions...")
+    print("Each comparison uses the same k=5 positions for both real and fake\n")
+
     for i, smi in enumerate(smiles_list):
         mol = Chem.MolFromSmiles(smi)
         if mol is None:
             continue
 
-        # For real drug, define changed_atoms as halogen/hetero atoms
-        changed_real = [
-            a.GetIdx()
-            for a in mol.GetAtoms()
-            if a.GetSymbol() in ("F", "Cl", "Br", "I", "N", "O", "S", "P")
-        ]
-        if not changed_real:
+        result = compare_at_same_positions(mol, scorer, k=5)
+        if result is None:
             continue
-        s_real = scorer.log_prior_micro(mol, changed_real)
-        real_scores.append(s_real)
 
-        # Randomly perturb the molecule
-        try:
-            mol_fake, changed_fake = random_perturb_mol(mol, num_changes=3)
-        except Exception:
-            continue
-        if not changed_fake:
-            continue
-        s_fake = scorer.log_prior_micro(mol_fake, changed_fake)
+        s_real, s_fake, delta = result
+        real_scores.append(s_real)
         fake_scores.append(s_fake)
+        deltas.append(delta)
 
         if (i + 1) % 100 == 0:
-            print(f"Processed {i + 1} molecules...")
+            print(f"Processed {i + 1} molecules, valid pairs: {len(deltas)}")
 
-    print(f"\nResults:")
-    print(f"Real drugs: {len(real_scores)} molecules")
-    print(f"Fake (perturbed): {len(fake_scores)} molecules")
+    print(f"\n{'='*60}")
+    print("RESULTS")
+    print(f"{'='*60}")
+    print(f"Number of valid comparison pairs: {len(deltas)}")
 
-    if real_scores and fake_scores:
-        print(f"\nMean log_prior_micro (real): {np.mean(real_scores):.3f} +/- {np.std(real_scores):.3f}")
-        print(f"Mean log_prior_micro (fake): {np.mean(fake_scores):.3f} +/- {np.std(fake_scores):.3f}")
-        print(f"\nDifference: {np.mean(real_scores) - np.mean(fake_scores):.3f}")
-        print("\nExpected: Real drugs should have higher (less negative) scores than fake molecules")
+    if deltas:
+        print(f"\nMean log_prior_micro (real):      {np.mean(real_scores):>8.3f} +/- {np.std(real_scores):.3f}")
+        print(f"Mean log_prior_micro (fake):      {np.mean(fake_scores):>8.3f} +/- {np.std(fake_scores):.3f}")
+        print(f"\nMean(delta = real - fake):        {np.mean(deltas):>8.3f}")
+        print(f"Std(delta):                       {np.std(deltas):>8.3f}")
+
+        fraction_positive = np.mean(np.array(deltas) > 0)
+        print(f"\nFraction(delta > 0):              {fraction_positive:>8.3f} ({fraction_positive*100:.1f}%)")
+
+        print(f"\n{'='*60}")
+        print("INTERPRETATION")
+        print(f"{'='*60}")
+        if np.mean(deltas) > 0 and fraction_positive > 0.5:
+            print("SUCCESS: Real drugs have higher prior scores than random perturbations")
+            print("The model has learned meaningful position preferences from DrugBank")
+        else:
+            print("WARNING: Prior scores do not clearly favor real drugs")
+            print("Consider adjusting alpha/gamma weights or retraining Graph-MLM")
     else:
         print("Error: Not enough valid molecules to compare")
 
