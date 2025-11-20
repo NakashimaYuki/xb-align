@@ -87,10 +87,12 @@ pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cu118
 
 Place your input data files in `data/raw/`:
 
-- **CNPD_ETCM_merged.xlsx**: Excel file with columns `ID`, `Name`, `Smiles` (natural products)
-- **drugs_raw.csv**: CSV file with columns `drug_id`, `name`, `smiles` (drug molecules)
-
-> Note: Rename your CNPD-ETCM file to avoid special characters in filenames
+- **CNPD-ETCM-merged.xlsx**: Excel file with columns `ID`, `Name`, `Smiles` (natural products)
+  - The script automatically detects Chinese filenames
+  - Current implementation processes the real CNPD-ETCM dataset (74,278 rows)
+- **drugbank_data_cleaned.csv**: CSV file with column `SMILES` or `smiles` (drug molecules)
+  - This file is converted to drugs_raw.csv format by prepare_drugbank_raw.py
+  - Current implementation uses DrugBank dataset (8,773 molecules, 7,809 valid after filtering)
 
 ## Usage
 
@@ -104,47 +106,57 @@ Follow these steps in order:
 python -m xb_align.data.prepare_np_scaffolds
 ```
 
-Output: `data/processed/np_scaffolds.parquet`
+Output: `data/processed/np_scaffolds.parquet` (27,552 unique scaffolds from 74,278 molecules)
 
-#### Step 2: Standardize Drug Data
+#### Step 2: Convert DrugBank to Standard Format
+
+```bash
+python -m xb_align.data.prepare_drugbank_raw
+```
+
+Output: `data/raw/drugs_raw.csv` (8,773 molecules in standardized format)
+
+#### Step 3: Standardize Drug Data
 
 ```bash
 python -m xb_align.data.prepare_drugs
 ```
 
-Output: `data/processed/drugs_std.parquet`
+Output: `data/processed/drugs_std.parquet` (7,809 valid molecules after filtering)
 
-#### Step 3: Build Position Reference Distribution
+#### Step 4: Build Position Reference Distribution
 
 ```bash
 python -m xb_align.data.build_halopos_stats
 ```
 
-Output: `data/processed/drug_halopos_ref.npz`
+Output: `data/processed/drug_halopos_ref.npz` (109 unique position-element pairs)
 
-#### Step 4: Build Env×Frag Co-occurrence Table
+#### Step 5: Build Env×Frag Co-occurrence Table
 
 ```bash
 python -m xb_align.data.build_envfrag_table
 ```
 
-Output: `data/processed/envfrag_table.npz`
+Output: `data/processed/envfrag_table.npz` (109 environment-element pairs with log probabilities)
 
-#### Step 5: Train Graph-MLM Model
+#### Step 6: Train Graph-MLM Model
 
 ```bash
 python -m xb_align.priors.train_graph_mlm
 ```
 
-Output: `data/processed/graph_mlm.pt`
+Output: `data/processed/graph_mlm.pt` (trained on 7,809 DrugBank molecules)
 
 Training parameters (can be modified in the script):
-- max_mols: 50000 (number of molecules to train on)
+- max_mols: 50000 (actual: 7,809 molecules used)
 - batch_size: 64
 - num_epochs: 5
 - learning_rate: 1e-3
 
-#### Step 6: Evaluate Prior Model
+Training results: Loss improved from 0.6984 (epoch 1) to 0.5462 (epoch 5)
+
+#### Step 7: Evaluate Prior Model
 
 Compare real drugs vs randomly perturbed molecules:
 
@@ -152,7 +164,7 @@ Compare real drugs vs randomly perturbed molecules:
 python -m xb_align.scripts.compare_prior_on_drugs_vs_random
 ```
 
-Expected output: Real drugs should have higher (less negative) log_prior_micro scores than randomly perturbed molecules, indicating the model has learned meaningful position preferences.
+This script evaluates the prior scorer on real DrugBank molecules vs chemically perturbed versions, validating that the model has learned meaningful position preferences.
 
 ### Run Tests
 

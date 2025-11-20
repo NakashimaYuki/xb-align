@@ -1,6 +1,5 @@
 # xb_align/priors/train_graph_mlm.py
 """Training script for Graph-MLM model."""
-
 import os
 import random
 from typing import List
@@ -10,6 +9,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from rdkit import Chem
 from torch.optim import Adam
+from torch_geometric.data import Batch
 
 from xb_align.priors.graph_mlm import GraphMLM
 from xb_align.priors.graph_mlm_data import mol_to_graph_with_random_mask
@@ -17,16 +17,11 @@ from xb_align.priors.atom_vocab import NUM_ATOM_CLASSES
 
 
 class DrugMolDataset(Dataset):
-    """PyTorch Dataset for drug molecules."""
+    """Simple dataset of drug molecules for Graph-MLM training."""
 
-    def __init__(self, smiles_list: List[str], max_mols: int = 50000):
-        """Initialize dataset.
-
-        Args:
-            smiles_list: List of SMILES strings
-            max_mols: Maximum number of molecules to use
-        """
+    def __init__(self, smiles_list: List[str], max_mols: int = 50000, mask_ratio: float = 0.15):
         self.smiles = [s for s in smiles_list[:max_mols]]
+        self.mask_ratio = mask_ratio
 
     def __len__(self) -> int:
         return len(self.smiles)
@@ -35,14 +30,12 @@ class DrugMolDataset(Dataset):
         smi = self.smiles[idx]
         mol = Chem.MolFromSmiles(smi)
         if mol is None:
-            raise ValueError(f"Invalid SMILES in dataset: {smi}")
-        data, _, _ = mol_to_graph_with_random_mask(mol)
+            raise ValueError("Invalid SMILES in dataset.")
+        data, _ = mol_to_graph_with_random_mask(mol, mask_ratio=self.mask_ratio)
         return data
 
 
 def collate_fn(batch):
-    """Collate function for PyG Data batching."""
-    from torch_geometric.data import Batch
     return Batch.from_data_list(batch)
 
 
@@ -54,16 +47,6 @@ def train_graph_mlm(
     num_epochs: int = 5,
     lr: float = 1e-3,
 ):
-    """Train Graph-MLM model on drug molecules.
-
-    Args:
-        drugs_parquet: Path to drugs_std.parquet file
-        out_ckpt: Path to save model checkpoint
-        max_mols: Maximum number of molecules to train on
-        batch_size: Training batch size
-        num_epochs: Number of training epochs
-        lr: Learning rate
-    """
     print(f"Loading drugs from: {drugs_parquet}")
     df = pd.read_parquet(drugs_parquet)
     smiles = df["smiles"].dropna().tolist()
@@ -74,7 +57,6 @@ def train_graph_mlm(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-
     model = GraphMLM(num_atom_types=NUM_ATOM_CLASSES, hidden_dim=128).to(device)
     optimizer = Adam(model.parameters(), lr=lr)
     criterion = torch.nn.CrossEntropyLoss()
@@ -89,50 +71,18 @@ def train_graph_mlm(
             x = batch.x  # [num_nodes]
             edge_index = batch.edge_index
             batch_idx = batch.batch
+            y_true = batch.y  # [num_nodes]
+            mask = batch.mask  # [num_nodes] boolean
 
             logits = model(x, edge_index, batch_idx)  # [num_nodes, num_classes]
 
-            # Compute loss only on masked positions
-            # We need to extract mask_indices for each graph in the batch
-            mask_indices_list = []
-            target_list = []
-
-            # Split batch back into individual graphs
-            num_graphs = batch_idx.max().item() + 1
-            node_offset = 0
-
-            for graph_id in range(num_graphs):
-                # Find nodes belonging to this graph
-                graph_mask = (batch_idx == graph_id)
-                num_nodes_in_graph = graph_mask.sum().item()
-
-                # Get mask indices for this graph (stored in batch)
-                # Note: mask_indices are stored per-graph, need to extract them
-                # Since we're using Batch.from_data_list, mask_indices might be concatenated
-                # For simplicity, we'll extract from the data structure
-
-                # Extract true labels for this graph
-                y_graph = batch.y[graph_mask]
-
-                # Extract mask indices - these are relative to the graph
-                # We need to adjust them to global batch indices
-                # This is a simplification - in production, handle this more carefully
-                if hasattr(batch, 'mask_indices'):
-                    # Find which mask_indices belong to this graph
-                    # For now, we'll mask all positions for training (simplified)
-                    mask_indices_list.append(torch.arange(node_offset, node_offset + num_nodes_in_graph, device=device))
-                    target_list.append(y_graph)
-
-                node_offset += num_nodes_in_graph
-
-            if not mask_indices_list:
+            # only compute loss on masked positions
+            if mask.sum() == 0:
                 continue
+            pred = logits[mask]
+            target = y_true[mask]
 
-            mask_indices_all = torch.cat(mask_indices_list)
-            target_all = torch.cat(target_list)
-
-            pred = logits[mask_indices_all]  # [n_masked, num_classes]
-            loss = criterion(pred, target_all)
+            loss = criterion(pred, target)
 
             optimizer.zero_grad()
             loss.backward()
