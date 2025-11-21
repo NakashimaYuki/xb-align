@@ -5,6 +5,186 @@ All notable changes to the XB-Align project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2025-11-21
+
+### Fixed - M2 EMD=0 Bug: Dual-Layer Solution
+
+**Critical Bug: Sinkhorn-EMD returning 0.000000**
+
+**Problem Analysis**:
+- **Symptom**: EMD = 0 despite MMD² = 0.519 and L2 = 0.354 showing clear distribution differences
+- **Root Cause 1 (Design)**: Vocabulary mismatch - baseline had 100% OOV rate, causing histogram = all zeros
+- **Root Cause 2 (Implementation)**: Non-deterministic Python `hash()` caused env_id incompatibility between runs
+
+**Solution 1: Union Support Architecture**
+- Added `count_position_descriptors()`: Counts all descriptors without reference restriction
+- Added `build_union_support()`: Constructs ref ∪ baseline vocabulary space
+- Added `compute_macro_metrics_union()`: Computes EMD/MMD²/L2 on union support
+- **Result**: EMD changed from 0.000000 → 0.452 (meaningful value) ✅
+
+**Solution 2: Deterministic Hash + Version Management**
+- Fixed `SimpleEnvFeaturizer.encode()`: Replaced Python `hash()` with MD5-based deterministic hash
+- Version: simple_env_v1.0 → **v1.1** (breaking change, requires data rebuild)
+- Added version tracking to `SimpleEnvFeaturizer`, `EnvFragEnergy`, and all .npz files
+- Added version validation in `load_macro_reference()` and `EnvFragEnergy.load()`
+- **Result**: env_id overlap from 0% → 100% ✅
+
+**New Version Management Tools**:
+- `check_env_version.py`: Validates drug_halopos_ref.npz version and overlap
+- `check_envfrag_version.py`: Validates envfrag_table.npz version and overlap
+
+**Data Files Rebuilt**:
+- `drug_halopos_ref.npz`: Rebuilt with simple_env_v1.1 (100% overlap confirmed)
+- `envfrag_table.npz`: Rebuilt with envfrag_simple_env_v1.1 (100% overlap confirmed)
+
+**Test Enhancements** (+2 tests, 17 total in test_macro_align.py):
+- `test_union_support_all_oov`: Validates EMD > 0 with 100% OOV scenario
+- `test_union_support_partial_overlap`: Validates EMD ordering with mixed vocabulary
+
+**Validation Results** (Real Baseline Pipeline):
+```
+Union Support Metrics (baseline vs DrugBank):
+  Sinkhorn EMD : 4.520276955164e-01  ✅ No longer 0!
+  MMD²         : 0.054863            ✅ Reasonable value
+  L2 distance  : 0.322856            ✅ Consistent
+
+Union Support Diagnostics:
+  ref keys         = 109
+  baseline-only    = 103
+  union keys       = 212
+  shared keys      = 61 (56% of ref)
+  OOV rate         = 62.80%
+```
+
+**Technical Details**:
+- Union support properly handles non-overlapping vocabularies in OT
+- NP scaffolds have 62.8% unique chemical environments vs DrugBank (expected)
+- MD5 hash ensures reproducibility across Python sessions
+- Version mismatch raises ValueError with clear rebuild instructions
+- Old .npz files without version trigger UserWarning
+
+**Documentation**:
+- `M2_EMD_FIX_SUMMARY.md`: Complete technical analysis of the bug and fix
+- Updated README.md with union support explanation and version management
+- All changes fully documented with rationale
+
+**Impact**:
+- **M2 COMPLETE**: All original goals achieved + major infrastructure improvements
+- EMD now correctly captures baseline vs DrugBank distribution difference
+- Version system prevents future silent failures from featurizer changes
+- Baseline metrics establish clear target for M3 GFlowNet (EMD < 0.452)
+
+---
+
+## [0.2.1] - 2025-11-21
+
+### Fixed - M2 Polish and Validation
+
+**Critical Bugs Fixed**:
+- PriorMicroScorer.from_files(): Corrected GraphMLM parameters to match training
+  - Was: `GraphMLM(hidden_dim=128, num_layers=3, num_atom_classes=...)`  ❌
+  - Now: `GraphMLM(num_atom_types=NUM_ATOM_CLASSES, hidden_dim=128)` ✅
+- EnvFragEnergy: Added missing `load()` classmethod for NPZ file loading
+- sample_baseline(): Added max_attempts safety guard to prevent infinite loops (default: n_samples * 10)
+
+**Test Enhancements** (+2 tests, 47 total):
+- test_sinkhorn_simple_2d_ordering: Validates EMD with synthetic distributions
+- test_histogram_consistency_full_vs_changed: Ensures histogram method consistency
+
+**Infrastructure**:
+- Created analyze_macro_distributions.py: Unified multi-source comparison script
+- Documented GraphMLM configuration in docs/GRAPH_MLM_CONFIG.md
+- Enhanced PriorMicroScorer.log_prior_micro() docstring with changed_atoms semantics
+
+**Validation** (Real Data Results):
+- Successfully ran baseline pipeline with 2000 samples
+- Macro metrics obtained: MMD² = 0.519, L2 = 0.354 (baseline vs DrugBank)
+- Created M2_VALIDATION_REPORT.md with comprehensive analysis
+- All 47 M2 tests passing
+
+---
+
+## [0.2.0] - 2025-11-21
+
+### Added - M2 Macro Alignment and Baseline Generation
+
+**Core Macro Alignment Module** (`xb_align.priors.macro_align`):
+- MacroAlignReference: Reference distribution over (env_id, element) position descriptors
+- Sinkhorn-EMD implementation: Entropic-regularized optimal transport distance
+- MMD2 implementation: Maximum Mean Discrepancy with RBF kernel
+- Cost matrix builder with configurable env/element mismatch penalties
+- Histogram builders for complete molecules and changed-atom subsets
+- Complete metric suite (EMD, MMD2, L2) for distribution comparison
+
+**Baseline Generator** (`xb_align.baseline`):
+- random_doping.py: Random single-atom substitution on scaffolds with RDKit sanitization
+- generator.py: Batch sampling from NP scaffold library (load, sample, BaselineSample dataclass)
+- scoring.py: BaselinePriorRanker for prior-based ranking using PriorMicroScorer
+
+**Evaluation Framework** (`xb_align.eval`):
+- macro_eval.py: Histogram computation from baseline samples
+- Visualization: Side-by-side bar plots comparing baseline vs DrugBank distributions
+- Support for top-k filtering to focus on most frequent position descriptors
+
+**CLI Script** (`xb_align/scripts/run_macro_baseline.py`):
+- End-to-end baseline generation and evaluation pipeline
+- Configurable parameters: n_samples, max_changes, seed
+- Automatic output: metrics.txt, baseline_top_samples.csv, histogram plots
+- Progress reporting with 7-step workflow
+
+**Enhanced PriorMicroScorer**:
+- Added from_files() classmethod for convenient loading from checkpoints
+- Unified interface for loading Graph-MLM and EnvFrag models
+
+### Testing
+- test_macro_align.py: 13 comprehensive tests for alignment functions
+  - Cost matrix construction and normalization
+  - RBF kernel construction
+  - Sinkhorn-EMD correctness and convergence
+  - MMD2 properties and edge cases
+  - Integration test with real drug_halopos_ref.npz
+
+- test_random_doping.py: 8 tests for baseline doping
+  - Deterministic behavior with fixed seeds
+  - Chemical validity via RDKit sanitization
+  - Respects max_changes constraint
+  - Handles invalid SMILES gracefully
+
+- test_baseline_generator.py: 9 tests for baseline sampling
+  - Sample generation from scaffold library
+  - Deterministic sampling with seeds
+  - Molecule validity and changed_atoms consistency
+  - Error handling for missing columns
+
+- test_baseline_scoring.py: 8 tests for prior-based ranking
+  - Mock scorer for isolated ranking logic
+  - Invalid molecule filtering
+  - Deterministic ranking
+  - Edge cases (empty list, single sample)
+
+- test_macro_eval.py: 7 tests for evaluation functions
+  - Histogram computation from baseline samples
+  - Plot generation and file I/O
+  - Parent directory creation
+  - Invalid input handling
+
+**Total: 45 new tests, all passing**
+
+### Performance
+- Sinkhorn-EMD converges in <200 iterations with epsilon=0.1
+- Cost matrix and kernel matrix precomputed once per reference
+- Histogram computation scales linearly with molecule count
+- Baseline generation: ~1000 molecules per minute (CPU, single-threaded)
+
+### Technical Details
+- Entropic regularization (epsilon=0.1) balances accuracy and speed in Sinkhorn
+- RBF kernel bandwidth=1.0 for MMD distance metric
+- Default baseline parameters: max_changes=5, top_k=2000 samples
+- All modules follow English-only, no-emoji coding standards
+- Comprehensive docstrings and type hints throughout
+
+---
+
 ## [0.1.2] - 2025-11-20
 
 ### Changed

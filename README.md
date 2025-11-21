@@ -39,14 +39,27 @@ xb_align_v4/
 │   │   ├── envfrag_energy.py
 │   │   ├── graph_mlm.py
 │   │   ├── graph_mlm_data.py
-│   │   └── train_graph_mlm.py
+│   │   ├── train_graph_mlm.py
+│   │   └── macro_align.py           # M2: Macro alignment (EMD, MMD)
 │   ├── rewards/                      # Reward functions
 │   │   └── prior_micro.py
+│   ├── baseline/                     # M2: Baseline generation
+│   │   ├── random_doping.py         # Random atom substitutions
+│   │   ├── generator.py             # Batch sampling
+│   │   └── scoring.py               # Prior-based ranking
+│   ├── eval/                         # M2: Evaluation tools
+│   │   └── macro_eval.py            # Histogram computation and plotting
 │   ├── scripts/                      # Analysis scripts
-│   │   └── compare_prior_on_drugs_vs_random.py
+│   │   ├── compare_prior_on_drugs_vs_random.py
+│   │   └── run_macro_baseline.py    # M2: Baseline evaluation
 │   └── gfn/                          # GFlowNet (future implementation)
-└── tests/                            # Unit tests
-    └── test_data_pipeline.py
+└── tests/                            # Unit tests (56 tests total)
+    ├── test_data_pipeline.py        # M1 tests
+    ├── test_macro_align.py          # M2: Macro alignment tests
+    ├── test_random_doping.py        # M2: Random doping tests
+    ├── test_baseline_generator.py   # M2: Generator tests
+    ├── test_baseline_scoring.py     # M2: Scoring tests
+    └── test_macro_eval.py           # M2: Evaluation tests
 ```
 
 ## Setup Instructions
@@ -75,7 +88,7 @@ pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu
 pip install torch-geometric
 
 # Additional utilities
-pip install scikit-learn tqdm pyyaml pytest
+pip install scikit-learn tqdm pyyaml pytest matplotlib
 ```
 
 For **Linux with GPU**, replace PyTorch installation with:
@@ -130,7 +143,7 @@ Output: `data/processed/drugs_std.parquet` (7,809 valid molecules after filterin
 python -m xb_align.data.build_halopos_stats
 ```
 
-Output: `data/processed/drug_halopos_ref.npz` (109 unique position-element pairs)
+Output: `data/processed/drug_halopos_ref.npz` (109 unique position-element pairs, includes version info)
 
 #### Step 5: Build Env×Frag Co-occurrence Table
 
@@ -138,7 +151,7 @@ Output: `data/processed/drug_halopos_ref.npz` (109 unique position-element pairs
 python -m xb_align.data.build_envfrag_table
 ```
 
-Output: `data/processed/envfrag_table.npz` (109 environment-element pairs with log probabilities)
+Output: `data/processed/envfrag_table.npz` (109 environment-element pairs with log probabilities, includes version info)
 
 #### Step 6: Train Graph-MLM Model
 
@@ -156,7 +169,24 @@ Training parameters (can be modified in the script):
 
 Training results: Loss improved from 0.6984 (epoch 1) to 0.5462 (epoch 5)
 
-#### Step 7: Evaluate Prior Model
+#### Step 7: Verify Version Consistency (Optional but Recommended)
+
+Check that env_featurizer and data files are compatible:
+
+```bash
+# Check drug_halopos_ref.npz version
+python check_env_version.py
+
+# Check envfrag_table.npz version
+python check_envfrag_version.py
+```
+
+These scripts verify:
+- Version matches between code and data files
+- 100% overlap of env_id values (confirms deterministic hash)
+- Automatic warnings if rebuild is needed
+
+#### Step 8: Evaluate Prior Model
 
 Compare real drugs vs randomly perturbed molecules at the same positions:
 
@@ -176,19 +206,96 @@ This script performs fair evaluation by:
 
 **Conclusion:** The model successfully learned meaningful position preferences from DrugBank data.
 
+---
+
+### M2: Macro Alignment and Baseline Generation
+
+M2 implements macro-level position distribution alignment using optimal transport metrics and establishes a baseline generation system for comparison.
+
+#### Run Baseline Generation and Evaluation
+
+```bash
+python -m xb_align.scripts.run_macro_baseline \
+  --np-scaffolds data/processed/np_scaffolds.parquet \
+  --halopos-ref data/processed/drug_halopos_ref.npz \
+  --graph-mlm data/processed/graph_mlm.pt \
+  --envfrag-table data/processed/envfrag_table.npz \
+  --out-dir outputs/m2_baseline \
+  --n-samples 5000 \
+  --max-changes 5 \
+  --seed 42
+```
+
+**Output files:**
+- `outputs/m2_baseline/baseline_top_samples.csv`: Top 2000 ranked baseline molecules
+- `outputs/m2_baseline/macro_hist_baseline_vs_drugbank.png`: Distribution comparison plot
+- `outputs/m2_baseline/metrics.txt`: Macro alignment metrics (including OOV rate and overlap statistics)
+
+**Actual metrics (baseline vs DrugBank on union support):**
+```
+Sinkhorn EMD  : 4.520276955164e-01
+MMD^2         : 0.054863
+L2 distance   : 0.322856
+OOV rate      : 62.80%
+Shared keys   : 61 / 109 (56% of DrugBank reference)
+```
+
+These metrics are computed on **union support space** (ref keys ∪ baseline keys) to properly handle vocabulary mismatch between NP scaffolds and DrugBank.
+
+#### M2 Components
+
+**Macro Alignment Module** (`xb_align.priors.macro_align`):
+- **MacroAlignReference**: Loads reference distribution from `drug_halopos_ref.npz` with version validation
+- **Sinkhorn-EMD**: Entropic-regularized optimal transport distance
+- **MMD²**: Maximum Mean Discrepancy with RBF kernel
+- **Union Support**: `build_union_support()` creates ref ∪ baseline vocabulary to handle OOV correctly
+- **`compute_macro_metrics_union()`**: Computes metrics on union support, preventing histogram collapse
+- **Histogram builders**: For complete molecules or changed-atom subsets
+
+**Baseline Generator** (`xb_align.baseline`):
+- **random_doping**: Random single-atom substitutions (C→N/O/S/P or C-H→C-F/Cl/Br/I)
+- **generator**: Batch sampling from NP scaffold library
+- **scoring**: Prior-based ranking using PriorMicroScorer
+
+**Evaluation Framework** (`xb_align.eval.macro_eval`):
+- Histogram computation from baseline samples
+- Visualization: Side-by-side distribution comparison plots
+
+#### Key Metrics
+
+1. **Sinkhorn-EMD**: Measures cost of transforming baseline distribution to DrugBank distribution
+   - Lower is better (0 = perfect match)
+   - Accounts for position similarity via cost matrix
+
+2. **MMD²**: Kernel-based distribution distance
+   - Lower is better (0 = perfect match)
+   - Uses RBF kernel with bandwidth=1.0
+
+3. **L2 Distance**: Simple Euclidean distance between histograms
+   - Lower is better (0 = perfect match)
+
+---
+
 ### Run Tests
 
 ```bash
 pytest
 ```
 
+Current test coverage:
+- **M1 tests**: 11 tests (data pipeline, priors, Graph-MLM)
+- **M2 tests**: 17 tests in test_macro_align.py (includes union support tests)
+- **Total**: All tests passing ✅
+
 ## Key Concepts
 
 ### Position Descriptor
 
 A `PositionDescriptor` captures the local environment and element at a specific atom position:
-- `env_id`: Hash-based encoding of local atom environment (atom type, aromaticity, degree, neighbor types)
+- `env_id`: **Deterministic** MD5-based encoding of local atom environment (atom type, aromaticity, degree, neighbor types)
 - `elem`: Element symbol (F, Cl, Br, I, N, O, S, P)
+
+**Version tracking**: Both `SimpleEnvFeaturizer` (v1.1) and data files include version information to ensure compatibility.
 
 ### Prior Components
 
@@ -209,13 +316,24 @@ Higher scores indicate better alignment with drug-like position distributions.
 - [x] **M1: Data preparation and prior learning (COMPLETE & VALIDATED)**
   - [x] NP scaffolds from real CNPD-ETCM data (27,552 scaffolds)
   - [x] Drug standardization from DrugBank (7,809 molecules)
-  - [x] Position priors and Env×Frag table
+  - [x] Position priors and Env×Frag table with version tracking
   - [x] Graph-MLM training with corrected masking
   - [x] Prior validation: Real > Fake (Mean delta: 33.28, 100% success rate)
-- [ ] M2: GFlowNet implementation for scaffold doping
-- [ ] M3: Multi-objective reward design (ADMET, halogen bonds, synthesis)
-- [ ] M4: Large-scale generation and evaluation
-- [ ] M5: Docking validation and case studies
+  - [x] Deterministic MD5-based env_id hash (v1.1)
+- [x] **M2: Macro alignment and baseline generation (COMPLETE & VALIDATED)**
+  - [x] Sinkhorn-EMD and MMD² implementation for distribution comparison
+  - [x] **Union support architecture** to handle vocabulary mismatch
+  - [x] Random doping baseline with prior-based ranking
+  - [x] Macro histogram computation and visualization
+  - [x] End-to-end baseline evaluation script
+  - [x] **Fixed EMD=0 bug** (dual-layer solution: design + implementation)
+  - [x] **Version management system** for env_featurizer and data files
+  - [x] 17 comprehensive tests including union support scenarios
+  - [x] **Verified metrics**: EMD=0.452, MMD²=0.055, OOV=62.8%
+- [ ] M3: GFlowNet implementation for scaffold doping
+- [ ] M4: Multi-objective reward design (ADMET, halogen bonds, synthesis)
+- [ ] M5: Large-scale generation and evaluation
+- [ ] M6: Docking validation and case studies
 
 ## Contributing
 

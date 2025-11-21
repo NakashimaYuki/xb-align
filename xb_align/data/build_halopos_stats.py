@@ -60,14 +60,18 @@ def build_drug_halopos_ref(
     freqs = counts / counts.sum()
 
     # Save as numpy arrays; PositionDescriptor list saved via np.object dtype
+    # Include env_featurizer version for compatibility checking
     os.makedirs(os.path.dirname(out_npz), exist_ok=True)
+    env_version = SimpleEnvFeaturizer.version()
     np.savez(
         out_npz,
         keys=np.array(keys, dtype=object),
         freqs=freqs,
+        env_version=env_version,
     )
     print(f"Saved drug_halopos_ref to: {out_npz}")
     print(f"Total unique (env_id, elem) pairs: {len(keys)}")
+    print(f"Env featurizer version: {env_version}")
 
 
 if __name__ == "__main__":

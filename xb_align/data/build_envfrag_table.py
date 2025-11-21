@@ -10,6 +10,7 @@ import pandas as pd
 from rdkit import Chem
 
 from xb_align.core.env_featurizer import SimpleEnvFeaturizer
+from xb_align.priors.envfrag_energy import EnvFragEnergy
 from xb_align.data.build_halopos_stats import ALLOWED_ELEMS
 
 
@@ -54,14 +55,18 @@ def build_envfrag_table(
     probs = counts / counts.sum()
     log_probs = np.log(probs + 1e-12)
 
+    # Save with version information for compatibility checking
     os.makedirs(os.path.dirname(out_npz), exist_ok=True)
+    table_version = EnvFragEnergy.version()
     np.savez(
         out_npz,
         keys=np.array(keys, dtype=object),
         log_probs=log_probs,
+        table_version=table_version,
     )
     print(f"Saved envfrag_table to: {out_npz}")
     print(f"Total unique (env_id, elem) pairs: {len(keys)}")
+    print(f"Table version: {table_version}")
 
 
 if __name__ == "__main__":
